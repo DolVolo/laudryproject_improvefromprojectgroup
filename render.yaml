@@ -9,7 +9,8 @@ services:
     rootDir: backend
     buildCommand: npm ci && npm run build
     startCommand: npm run start:prod
-    healthCheckPath: /api
+    # No healthCheckPath on purpose: Render holds a deploy in "Deploying"
+    # forever if the path does not return 2xx. Port detection alone is enough.
     autoDeploy: true
     envVars:
       - key: NODE_VERSION
