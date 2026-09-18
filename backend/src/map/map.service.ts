@@ -594,6 +594,7 @@ export class MapService {
 
     const shops = await this.shopModel
       .find({
+        approvalStatus: 'approved',
         location: {
           $near: {
             $geometry: { type: 'Point', coordinates: [lng, lat] },

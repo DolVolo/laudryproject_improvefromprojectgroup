@@ -169,4 +169,11 @@ export class AdminUsersController {
     }
     return this.adminService.adminDeleteUser(userId);
   }
+
+  @UseGuards(AccessTokenGuard)
+  @Get('dashboard/stats')
+  async getDashboardStats(@Request() req: any) {
+    await this.ensureAdmin(req);
+    return this.adminService.getAdminDashboardStats();
+  }
 }

@@ -12,6 +12,7 @@ export default function CustomerLayout({ children }: { children: React.ReactNode
         extraItems={[
           { label: "New Order", href: "/customer/create-order" },
           { label: "History", href: "/customer/history" },
+          { label: "Wallet", href: "/customer/wallet" },
         ]}
       />
 

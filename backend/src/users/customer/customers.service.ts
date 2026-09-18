@@ -84,4 +84,22 @@ export class CustomersService {
   findNearbyCustomers(longitude: number, latitude: number, maxDistance?: number) {
     return this.usersService.findNearbyCustomers(longitude, latitude, maxDistance);
   }
+
+  // ===== Wallet & Loyalty =====
+
+  getWalletInfo(userId: string) {
+    return this.usersService.getWalletInfo(userId);
+  }
+
+  topUpWallet(userId: string, amount: number) {
+    return this.usersService.topUpWallet(userId, amount);
+  }
+
+  payWithWallet(userId: string, orderId: string, couponCode?: string) {
+    return this.usersService.payWithWallet(userId, orderId, couponCode);
+  }
+
+  redeemCoupon(userId: string, code: string) {
+    return this.usersService.redeemCoupon(userId, code);
+  }
 }

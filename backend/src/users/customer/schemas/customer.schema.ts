@@ -76,6 +76,60 @@ export class Customer {
 
   @Prop({ type: Boolean, default: false })
   isPhoneVerified: boolean;
+
+  // ===== Wallet & Loyalty =====
+
+  @Prop({ type: Number, default: 0, min: 0 })
+  walletBalance: number;
+
+  @Prop({ type: Number, default: 0, min: 0 })
+  loyaltyPoints: number;
+
+  @Prop({
+    type: [
+      {
+        code: String,
+        description: String,
+        discountType: { type: String, enum: ['fixed', 'percent'], default: 'fixed' },
+        discountValue: { type: Number, default: 0 },
+        minOrderPrice: { type: Number, default: 0 },
+        usedAt: { type: Date, default: null },
+        expiresAt: { type: Date, default: null },
+      },
+    ],
+    default: [],
+  })
+  coupons: Array<{
+    code: string;
+    description: string;
+    discountType: 'fixed' | 'percent';
+    discountValue: number;
+    minOrderPrice: number;
+    usedAt: Date | null;
+    expiresAt: Date | null;
+  }>;
+
+  @Prop({
+    type: [
+      {
+        type: { type: String, enum: ['topup', 'payment', 'refund', 'points_earned', 'points_redeemed'] },
+        amount: Number,
+        pointsChange: { type: Number, default: 0 },
+        description: String,
+        orderId: { type: String, default: null },
+        createdAt: { type: Date, default: () => new Date() },
+      },
+    ],
+    default: [],
+  })
+  walletTransactions: Array<{
+    type: 'topup' | 'payment' | 'refund' | 'points_earned' | 'points_redeemed';
+    amount: number;
+    pointsChange: number;
+    description: string;
+    orderId: string | null;
+    createdAt: Date;
+  }>;
 }
 
 export const CustomerSchema = SchemaFactory.createForClass(Customer);

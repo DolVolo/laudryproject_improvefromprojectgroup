@@ -295,6 +295,9 @@ export default function AdminPinShopPage() {
 
     const markers: LeafletMarker[] = [];
     for (const shop of shops) {
+      // Skip pending/rejected shops on the map
+      if (shop.approvalStatus && shop.approvalStatus !== 'approved') continue;
+
       const coords = shop.location?.coordinates;
       if (!Array.isArray(coords) || coords.length < 2) continue;
 

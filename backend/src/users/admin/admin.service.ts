@@ -57,4 +57,8 @@ export class AdminService {
   adminDeleteUser(userId: string) {
     return this.usersService.adminDeleteUser(userId);
   }
+
+  getAdminDashboardStats() {
+    return this.usersService.getAdminDashboardStats();
+  }
 }

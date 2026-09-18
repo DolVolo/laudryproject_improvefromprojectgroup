@@ -19,6 +19,10 @@ export default function AdminPage() {
                         <span className="mr-3 text-lg">📊</span>
                         Dashboard
                     </Link>
+                    <Link href="/admin/dashboard" className="flex items-center w-full rounded-xl px-4 py-3 text-sm font-bold text-blue-700/60 hover:bg-blue-50 hover:text-blue-700 transition-all group">
+                        <span className="mr-3 text-lg opacity-50 group-hover:opacity-100">📈</span>
+                        รายงาน / กราฟ
+                    </Link>
                     <Link href="/admin/customers" className="flex items-center w-full rounded-xl px-4 py-3 text-sm font-bold text-blue-700/60 hover:bg-blue-50 hover:text-blue-700 transition-all group">
                         <span className="mr-3 text-lg opacity-50 group-hover:opacity-100">👤</span>
                         Customer List

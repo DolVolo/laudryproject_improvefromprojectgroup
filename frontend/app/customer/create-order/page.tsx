@@ -187,6 +187,22 @@ export default function CreateOrderPage() {
   const [mustCompleteProfile, setMustCompleteProfile] = useState(false);
   const [isAdminSession, setIsAdminSession] = useState(false);
 
+  // Wallet / Coupon / Points
+  const [walletBalance, setWalletBalance] = useState(0);
+  const [loyaltyPoints, setLoyaltyPoints] = useState(0);
+  const [coupons, setCoupons] = useState<Array<{
+    code: string;
+    description: string;
+    discountType: 'fixed' | 'percent';
+    discountValue: number;
+    minOrderPrice: number;
+  }>>([]);
+  const [selectedCoupon, setSelectedCoupon] = useState("");
+  const [usePoints, setUsePoints] = useState(true);
+  const [couponInput, setCouponInput] = useState("");
+  const [couponLoading, setCouponLoading] = useState(false);
+  const [couponMessage, setCouponMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
   useEffect(() => {
     setHasMounted(true);
 
@@ -248,7 +264,56 @@ export default function CreateOrderPage() {
 
   const unitPrice = laundryType === 'dry' ? 20 : getWashUnitPrice(weightCategory);
 
+  // Compute coupon & points discounts
+  const discounts = useMemo(() => {
+    const total = estimatedPrice.totalPrice;
+    let couponDiscount = 0;
+    if (selectedCoupon) {
+      const coupon = coupons.find((c) => c.code === selectedCoupon);
+      if (coupon && total >= (coupon.minOrderPrice || 0)) {
+        couponDiscount = coupon.discountType === 'percent'
+          ? Math.round(total * (coupon.discountValue / 100) * 100) / 100
+          : coupon.discountValue;
+        couponDiscount = Math.min(couponDiscount, total);
+      }
+    }
+    const afterCoupon = Math.max(0, total - couponDiscount);
+    const pointsDiscount = usePoints ? Math.min(Math.floor(loyaltyPoints / 10), afterCoupon) : 0;
+    const finalPrice = Math.max(0, afterCoupon - pointsDiscount);
+    return { couponDiscount, pointsDiscount, finalPrice };
+  }, [estimatedPrice.totalPrice, selectedCoupon, coupons, usePoints, loyaltyPoints]);
+
   const minScheduleDate = useMemo(() => new Date().toISOString().slice(0, 10), []);
+
+  const handleRedeemCoupon = async () => {
+    if (!couponInput.trim()) return;
+    setCouponLoading(true);
+    setCouponMessage(null);
+    try {
+      const res = await apiFetch("/customers/wallet/redeem-coupon", {
+        method: "POST",
+        body: JSON.stringify({ code: couponInput.trim() }),
+      }) as any;
+      setCouponMessage({ type: "success", text: res.message || "เพิ่มคูปองสำเร็จ" });
+      setCouponInput("");
+      // Refresh wallet data to get updated coupons
+      const walletData = await apiFetch("/customers/wallet") as any;
+      if (walletData) {
+        setWalletBalance(walletData.walletBalance || 0);
+        setLoyaltyPoints(walletData.loyaltyPoints || 0);
+        const validCoupons = (walletData.coupons || []).filter((c: any) => !c.usedAt);
+        setCoupons(validCoupons);
+        // Auto-select the newly added coupon
+        if (res.coupon?.code) {
+          setSelectedCoupon(res.coupon.code);
+        }
+      }
+    } catch (e: any) {
+      setCouponMessage({ type: "error", text: e?.message || "ไม่สามารถใช้คูปองได้" });
+    } finally {
+      setCouponLoading(false);
+    }
+  };
 
   const scheduleTimeOptions = useMemo(() => {
     const options: Array<{ value: string; label: string }> = [];
@@ -308,6 +373,18 @@ export default function CreateOrderPage() {
         const data = await apiFetch("/customers/saved-addresses");
         if (Array.isArray(data)) {
           setSavedAddresses(data as SavedAddress[]);
+        }
+
+        // Fetch wallet info for coupon/points
+        try {
+          const walletData = await apiFetch("/customers/wallet");
+          if (walletData) {
+            setWalletBalance(walletData.walletBalance || 0);
+            setLoyaltyPoints(walletData.loyaltyPoints || 0);
+            setCoupons(Array.isArray(walletData.coupons) ? walletData.coupons : []);
+          }
+        } catch {
+          // wallet not available yet — ignore
         }
       } catch (savedError) {
         const message = savedError instanceof Error ? savedError.message : 'Failed to load saved addresses';
@@ -1017,11 +1094,138 @@ export default function CreateOrderPage() {
                 <span>฿{estimatedPrice.pickupServiceFee.toLocaleString()}</span>
               </div>
               <div className="flex items-center justify-between border-t border-emerald-200 pt-1 font-black">
-                <span>รวมสุทธิ</span>
+                <span>รวมก่อนส่วนลด</span>
                 <span>฿{estimatedPrice.totalPrice.toLocaleString()}</span>
               </div>
             </div>
           </div>
+
+          {/* ===== Coupon Section ===== */}
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 space-y-3">
+            <p className="text-xs font-black uppercase tracking-widest text-amber-700">🎫 คูปองส่วนลด</p>
+
+            {/* Coupon code input */}
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={couponInput}
+                onChange={(e) => { setCouponInput(e.target.value.toUpperCase()); setCouponMessage(null); }}
+                placeholder="ใส่รหัสคูปอง เช่น WELCOME50"
+                className="flex-1 rounded-xl border border-amber-300 bg-white px-3 py-2 text-sm font-semibold text-amber-900 placeholder:text-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-400"
+              />
+              <button
+                type="button"
+                onClick={handleRedeemCoupon}
+                disabled={couponLoading || !couponInput.trim()}
+                className="rounded-xl bg-amber-500 px-4 py-2 text-sm font-black text-white hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+              >
+                {couponLoading ? "..." : "ใช้โค้ด"}
+              </button>
+            </div>
+            {couponMessage && (
+              <p className={`text-xs font-bold ${couponMessage.type === 'success' ? 'text-green-600' : 'text-red-500'}`}>
+                {couponMessage.text}
+              </p>
+            )}
+
+            {/* Coupon selection from wallet */}
+            {coupons.length > 0 && (
+              <div className="space-y-2 border-t border-amber-200 pt-3">
+                <p className="text-[11px] font-bold text-amber-600">คูปองของคุณ:</p>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="coupon"
+                    checked={!selectedCoupon}
+                    onChange={() => setSelectedCoupon("")}
+                    className="accent-amber-600"
+                  />
+                  <span className="text-sm font-semibold text-amber-800">ไม่ใช้คูปอง</span>
+                </label>
+                {coupons.map((coupon) => (
+                  <label key={coupon.code} className={`flex items-center gap-2 cursor-pointer rounded-xl p-2 transition-all ${selectedCoupon === coupon.code ? 'bg-amber-100 ring-2 ring-amber-400' : ''}`}>
+                    <input
+                      type="radio"
+                      name="coupon"
+                      checked={selectedCoupon === coupon.code}
+                      onChange={() => setSelectedCoupon(coupon.code)}
+                      className="accent-amber-600"
+                    />
+                    <div className="flex-1">
+                      <span className="text-sm font-black text-amber-900">{coupon.code}</span>
+                      <span className="ml-2 text-xs font-bold text-amber-600">
+                        {coupon.discountType === 'percent' ? `ลด ${coupon.discountValue}%` : `ลด ฿${coupon.discountValue}`}
+                      </span>
+                      {coupon.description && (
+                        <p className="text-[10px] text-amber-600">{coupon.description}</p>
+                      )}
+                      {coupon.minOrderPrice > 0 && (
+                        <p className="text-[10px] text-amber-500">ขั้นต่ำ ฿{coupon.minOrderPrice}</p>
+                      )}
+                    </div>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* ===== Loyalty Points Section ===== */}
+          {loyaltyPoints > 0 && (
+            <div className="rounded-2xl border border-violet-200 bg-violet-50 p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-widest text-violet-700">⭐ แต้มสะสม</p>
+                  <p className="text-sm font-bold text-violet-800 mt-1">
+                    มี {loyaltyPoints} แต้ม = ส่วนลด ฿{Math.floor(loyaltyPoints / 10)}
+                  </p>
+                  <p className="text-[10px] text-violet-500">(10 แต้ม = ฿1)</p>
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={usePoints}
+                    onChange={(e) => setUsePoints(e.target.checked)}
+                    className="accent-violet-600 h-4 w-4"
+                  />
+                  <span className="text-xs font-bold text-violet-700">ใช้แต้ม</span>
+                </label>
+              </div>
+            </div>
+          )}
+
+          {/* ===== Wallet Info ===== */}
+          <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-black uppercase tracking-widest text-blue-600">💰 Wallet</p>
+                <p className="text-lg font-black text-blue-900">฿{walletBalance.toLocaleString()}</p>
+              </div>
+              <a href="/customer/wallet" className="text-xs font-bold text-blue-600 hover:underline">เติมเงิน →</a>
+            </div>
+          </div>
+
+          {/* ===== Final Price Summary ===== */}
+          {(discounts.couponDiscount > 0 || discounts.pointsDiscount > 0) && (
+            <div className="rounded-2xl border border-green-200 bg-green-50 p-4 space-y-1">
+              <p className="text-xs font-black uppercase tracking-widest text-green-700">สรุปส่วนลด</p>
+              {discounts.couponDiscount > 0 && (
+                <div className="flex items-center justify-between text-xs font-semibold text-green-700">
+                  <span>คูปอง ({selectedCoupon})</span>
+                  <span>-฿{discounts.couponDiscount.toLocaleString()}</span>
+                </div>
+              )}
+              {discounts.pointsDiscount > 0 && (
+                <div className="flex items-center justify-between text-xs font-semibold text-green-700">
+                  <span>แลกแต้มสะสม</span>
+                  <span>-฿{discounts.pointsDiscount.toLocaleString()}</span>
+                </div>
+              )}
+              <div className="flex items-center justify-between border-t border-green-200 pt-1 text-sm font-black text-green-800">
+                <span>ยอดชำระสุทธิ</span>
+                <span>฿{discounts.finalPrice.toLocaleString()}</span>
+              </div>
+            </div>
+          )}
 
           <button
             type="submit"

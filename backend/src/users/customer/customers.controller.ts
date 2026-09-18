@@ -353,4 +353,40 @@ export class CustomersController {
       body.maxDistance,
     );
   }
+
+  // ===== Wallet & Payment =====
+
+  @UseGuards(AccessTokenGuard)
+  @Get('wallet')
+  async getWallet(@Request() req) {
+    const userId = await this.ensureRole(req, this.customerActionRoles);
+    return this.customersService.getWalletInfo(userId);
+  }
+
+  @UseGuards(AccessTokenGuard)
+  @Post('wallet/topup')
+  async topUpWallet(@Request() req, @Body() body: { amount: number }) {
+    const userId = await this.ensureRole(req, this.customerActionRoles);
+    return this.customersService.topUpWallet(userId, body.amount);
+  }
+
+  @UseGuards(AccessTokenGuard)
+  @Post('wallet/pay')
+  async payWithWallet(
+    @Request() req,
+    @Body() body: { orderId: string; couponCode?: string },
+  ) {
+    const userId = await this.ensureRole(req, this.customerActionRoles);
+    return this.customersService.payWithWallet(userId, body.orderId, body.couponCode);
+  }
+
+  @UseGuards(AccessTokenGuard)
+  @Post('wallet/redeem-coupon')
+  async redeemCoupon(
+    @Request() req,
+    @Body() body: { code: string },
+  ) {
+    const userId = await this.ensureRole(req, this.customerActionRoles);
+    return this.customersService.redeemCoupon(userId, body.code);
+  }
 }

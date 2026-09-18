@@ -372,18 +372,14 @@ export class UsersService {
     });
 
     if (user.role === 'admin') {
+      // Admin gets all shops (including pending) for management purposes
       return enriched;
     }
 
-    if (user.role === 'employee') {
-      return enriched;
-    }
-
-    if (user.role === 'rider') {
-      return enriched;
-    }
-
-    return enriched.filter((shop: any) => shop.approvalStatus === 'approved');
+    // All other roles only see approved shops on the map
+    return enriched.filter(
+      (shop: any) => shop.approvalStatus === 'approved',
+    );
   }
 
   findByEmail(email: string) {
@@ -1893,5 +1889,366 @@ export class UsersService {
 
     this.orderGateway.emitOrderUpdate(order);
     return order;
+  }
+
+  // ===================================================================
+  // Wallet & Loyalty
+  // ===================================================================
+
+  async getWalletInfo(userId: string) {
+    const customer = await this.customerModel
+      .findOne({ userId: new Types.ObjectId(userId) } as any)
+      .select('walletBalance loyaltyPoints coupons walletTransactions')
+      .lean()
+      .exec();
+    if (!customer) {
+      return {
+        walletBalance: 0,
+        loyaltyPoints: 0,
+        coupons: [],
+        transactions: [],
+      };
+    }
+
+    const activeCoupons = (customer.coupons || []).filter(
+      (c: any) => !c.usedAt && (!c.expiresAt || new Date(c.expiresAt) > new Date()),
+    );
+
+    return {
+      walletBalance: customer.walletBalance || 0,
+      loyaltyPoints: customer.loyaltyPoints || 0,
+      coupons: activeCoupons,
+      transactions: (customer.walletTransactions || [])
+        .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        .slice(0, 50),
+    };
+  }
+
+  private async getOrCreateCustomerForWallet(userId: string) {
+    let customer = await this.customerModel
+      .findOne({ userId: new Types.ObjectId(userId) } as any)
+      .exec();
+    if (!customer) {
+      const user = await this.userModel.findById(userId).lean().exec();
+      if (!user) throw new NotFoundException('User not found');
+      customer = await this.customerModel.create({
+        userId: new Types.ObjectId(userId),
+        firstName: (user as any).fullName?.split(' ')[0] || 'Customer',
+        lastName: (user as any).fullName?.split(' ').slice(1).join(' ') || '',
+        phoneNumber: (user as any).phone || `auto-${userId.slice(-6)}`,
+        walletBalance: 0,
+        loyaltyPoints: 0,
+        coupons: [],
+        walletTransactions: [],
+      } as any);
+    }
+    return customer;
+  }
+
+  async topUpWallet(userId: string, amount: number) {
+    if (!amount || amount <= 0 || amount > 100000) {
+      throw new BadRequestException('Amount must be between 1 and 100,000');
+    }
+
+    const customer = await this.getOrCreateCustomerForWallet(userId);
+
+    customer.walletBalance = (customer.walletBalance || 0) + amount;
+    (customer.walletTransactions as any[]).push({
+      type: 'topup',
+      amount,
+      pointsChange: 0,
+      description: `เติมเงิน ฿${amount}`,
+      orderId: null,
+      createdAt: new Date(),
+    });
+
+    await customer.save();
+    return {
+      walletBalance: customer.walletBalance,
+      message: `เติมเงิน ฿${amount} สำเร็จ`,
+    };
+  }
+
+  async payWithWallet(userId: string, orderId: string, couponCode?: string) {
+    const customer = await this.getOrCreateCustomerForWallet(userId);
+
+    const order = await this.orderModel.findById(orderId).exec();
+    if (!order) throw new NotFoundException('Order not found');
+    if (String(order.customerId) !== String(customer._id)) {
+      throw new ForbiddenException('This order does not belong to you');
+    }
+
+    let totalPrice = order.totalPrice || 0;
+    let couponDiscount = 0;
+
+    // Apply coupon
+    if (couponCode) {
+      const couponIdx = (customer.coupons as any[]).findIndex(
+        (c: any) => c.code === couponCode && !c.usedAt && (!c.expiresAt || new Date(c.expiresAt) > new Date()),
+      );
+      if (couponIdx === -1) throw new BadRequestException('Coupon invalid or expired');
+
+      const coupon = (customer.coupons as any[])[couponIdx];
+      if (totalPrice < (coupon.minOrderPrice || 0)) {
+        throw new BadRequestException(`Min order ฿${coupon.minOrderPrice} for this coupon`);
+      }
+
+      if (coupon.discountType === 'percent') {
+        couponDiscount = Math.round(totalPrice * (coupon.discountValue / 100) * 100) / 100;
+      } else {
+        couponDiscount = coupon.discountValue;
+      }
+      couponDiscount = Math.min(couponDiscount, totalPrice);
+      (customer.coupons as any[])[couponIdx].usedAt = new Date();
+    }
+
+    const finalPrice = Math.max(0, totalPrice - couponDiscount);
+
+    // Redeem loyalty points (10 points = ฿1)
+    const pointsDiscount = Math.min(Math.floor((customer.loyaltyPoints || 0) / 10), finalPrice);
+    const amountToPay = finalPrice - pointsDiscount;
+
+    if ((customer.walletBalance || 0) < amountToPay) {
+      throw new BadRequestException(
+        `ยอดเงินไม่เพียงพอ ต้องการ ฿${amountToPay} แต่มี ฿${customer.walletBalance || 0}`,
+      );
+    }
+
+    // Deduct wallet
+    customer.walletBalance = (customer.walletBalance || 0) - amountToPay;
+
+    // Deduct points used
+    const pointsUsed = pointsDiscount * 10;
+    customer.loyaltyPoints = (customer.loyaltyPoints || 0) - pointsUsed;
+
+    // Earn new loyalty points (1 point per ฿10 spent)
+    const pointsEarned = Math.floor(amountToPay / 10);
+    customer.loyaltyPoints += pointsEarned;
+
+    // Record transactions
+    (customer.walletTransactions as any[]).push({
+      type: 'payment',
+      amount: -amountToPay,
+      pointsChange: -pointsUsed,
+      description: `ชำระออเดอร์ ฿${amountToPay}${couponDiscount > 0 ? ` (ส่วนลดคูปอง ฿${couponDiscount})` : ''}${pointsDiscount > 0 ? ` (แลกแต้ม ฿${pointsDiscount})` : ''}`,
+      orderId: String(order._id),
+      createdAt: new Date(),
+    });
+
+    if (pointsEarned > 0) {
+      (customer.walletTransactions as any[]).push({
+        type: 'points_earned',
+        amount: 0,
+        pointsChange: pointsEarned,
+        description: `ได้รับ ${pointsEarned} แต้มจากการชำระเงิน`,
+        orderId: String(order._id),
+        createdAt: new Date(),
+      });
+    }
+
+    await customer.save();
+
+    return {
+      walletBalance: customer.walletBalance,
+      loyaltyPoints: customer.loyaltyPoints,
+      paid: amountToPay,
+      couponDiscount,
+      pointsDiscount,
+      pointsEarned,
+      message: 'ชำระเงินสำเร็จ',
+    };
+  }
+
+  // ===================================================================
+  // Coupon Redemption
+  // ===================================================================
+
+  async redeemCoupon(userId: string, code: string) {
+    if (!code || typeof code !== 'string' || code.trim().length === 0) {
+      throw new BadRequestException('Coupon code is required');
+    }
+    const couponCode = code.trim().toUpperCase();
+
+    // Hardcoded promo coupons — in production, query a coupons collection
+    const promoCoupons: Record<string, { description: string; discountType: 'fixed' | 'percent'; discountValue: number; minOrderPrice: number; expiresAt: Date | null }> = {
+      'WELCOME50': { description: 'ลูกค้าใหม่ ลด 50 บาท', discountType: 'fixed', discountValue: 50, minOrderPrice: 100, expiresAt: null },
+      'SAVE10': { description: 'ลด 10%', discountType: 'percent', discountValue: 10, minOrderPrice: 80, expiresAt: null },
+      'LAUNCH100': { description: 'เปิดตัว ลด 100 บาท', discountType: 'fixed', discountValue: 100, minOrderPrice: 200, expiresAt: null },
+      'WASH20': { description: 'ลดค่าซัก 20%', discountType: 'percent', discountValue: 20, minOrderPrice: 50, expiresAt: null },
+    };
+
+    const promo = promoCoupons[couponCode];
+    if (!promo) {
+      throw new BadRequestException('รหัสคูปองไม่ถูกต้อง');
+    }
+
+    const customer = await this.getOrCreateCustomerForWallet(userId);
+
+    // Check if already redeemed
+    const alreadyHas = (customer.coupons as any[]).some(
+      (c: any) => c.code === couponCode,
+    );
+    if (alreadyHas) {
+      throw new BadRequestException('คุณได้ใช้คูปองนี้แล้ว');
+    }
+
+    (customer.coupons as any[]).push({
+      code: couponCode,
+      description: promo.description,
+      discountType: promo.discountType,
+      discountValue: promo.discountValue,
+      minOrderPrice: promo.minOrderPrice,
+      usedAt: null,
+      expiresAt: promo.expiresAt,
+    });
+
+    await customer.save();
+
+    return {
+      message: `เพิ่มคูปอง ${couponCode} สำเร็จ — ${promo.description}`,
+      coupon: {
+        code: couponCode,
+        description: promo.description,
+        discountType: promo.discountType,
+        discountValue: promo.discountValue,
+        minOrderPrice: promo.minOrderPrice,
+      },
+    };
+  }
+
+  // ===================================================================
+  // Admin Dashboard / Reports
+  // ===================================================================
+
+  async getAdminDashboardStats() {
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayEnd = new Date(todayStart.getTime() + 86400000);
+
+    // Count users by role
+    const [totalCustomers, totalRiders, totalEmployees, totalAdmins] =
+      await Promise.all([
+        this.userModel.countDocuments({ role: 'user' }).exec(),
+        this.userModel.countDocuments({ role: 'rider' }).exec(),
+        this.userModel.countDocuments({ role: 'employee' }).exec(),
+        this.userModel.countDocuments({ role: 'admin' }).exec(),
+      ]);
+
+    // Order stats
+    const [totalOrders, activeOrders, completedOrders, cancelledOrders] =
+      await Promise.all([
+        this.orderModel.countDocuments().exec(),
+        this.orderModel.countDocuments({ status: { $nin: ['completed', 'cancelled'] } }).exec(),
+        this.orderModel.countDocuments({ status: 'completed' }).exec(),
+        this.orderModel.countDocuments({ status: 'cancelled' }).exec(),
+      ]);
+
+    // Today's orders
+    const todayOrders = await this.orderModel
+      .countDocuments({ createdAt: { $gte: todayStart, $lt: todayEnd } })
+      .exec();
+
+    // Revenue aggregation (all time + today)
+    const revenueAgg = await this.orderModel.aggregate([
+      { $match: { status: 'completed' } },
+      {
+        $group: {
+          _id: null,
+          totalRevenue: { $sum: '$totalPrice' },
+        },
+      },
+    ]);
+
+    const todayRevenueAgg = await this.orderModel.aggregate([
+      {
+        $match: {
+          status: 'completed',
+          completedAt: { $gte: todayStart, $lt: todayEnd },
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          todayRevenue: { $sum: '$totalPrice' },
+        },
+      },
+    ]);
+
+    // Daily revenue for last 7 days
+    const sevenDaysAgo = new Date(todayStart.getTime() - 6 * 86400000);
+    const dailyRevenueAgg = await this.orderModel.aggregate([
+      {
+        $match: {
+          status: 'completed',
+          completedAt: { $gte: sevenDaysAgo, $lt: todayEnd },
+        },
+      },
+      {
+        $group: {
+          _id: {
+            $dateToString: { format: '%Y-%m-%d', date: '$completedAt' },
+          },
+          revenue: { $sum: '$totalPrice' },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]);
+
+    // Fill missing days
+    const dailyRevenue: { date: string; revenue: number; count: number }[] = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(todayStart.getTime() - i * 86400000);
+      const dateKey = d.toISOString().slice(0, 10);
+      const found = dailyRevenueAgg.find((r: any) => r._id === dateKey);
+      dailyRevenue.push({
+        date: dateKey,
+        revenue: found ? found.revenue : 0,
+        count: found ? found.count : 0,
+      });
+    }
+
+    // Orders by status distribution
+    const statusDistribution = await this.orderModel.aggregate([
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
+    // Shop count
+    const totalShops = await this.shopModel.countDocuments().exec();
+
+    // Recent completed orders (last 10)
+    const recentOrders = await this.orderModel
+      .find({ status: 'completed' })
+      .sort({ completedAt: -1 })
+      .limit(10)
+      .lean()
+      .exec();
+
+    return {
+      users: { totalCustomers, totalRiders, totalEmployees, totalAdmins },
+      orders: {
+        totalOrders,
+        activeOrders,
+        completedOrders,
+        cancelledOrders,
+        todayOrders,
+      },
+      revenue: {
+        totalRevenue: revenueAgg[0]?.totalRevenue || 0,
+        todayRevenue: todayRevenueAgg[0]?.todayRevenue || 0,
+      },
+      dailyRevenue,
+      statusDistribution: statusDistribution.map((s: any) => ({
+        status: s._id,
+        count: s.count,
+      })),
+      totalShops,
+      recentOrders,
+    };
   }
 }

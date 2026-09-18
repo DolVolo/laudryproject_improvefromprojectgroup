@@ -69,6 +69,7 @@ const labelIconMap: Record<string, React.ReactNode> = {
   "dashboard": icons.dashboard,
   "new order": icons.order,
   "history": icons.history,
+  "wallet": <Icon d="M21 12V7H5a2 2 0 010-4h14v4M3 5v14a2 2 0 002 2h16v-5M18 14a1 1 0 100 2 1 1 0 000-2z" />,
   "shop": icons.shop,
   "users": icons.users,
   "profile": icons.profile,
@@ -192,6 +193,7 @@ export default function UserTopNavbar({ role, homeHref, settingsHref, extraItems
           { label: "Admins", href: `/admin/admins${fromParam}`, icon: icons.admins },
           { label: "Employees", href: `/admin/employees${fromParam}`, icon: icons.employees },
           { label: "Pin Shop", href: `/admin/pin-shop${fromParam}`, icon: icons.pinShop },
+          { label: "Dashboard", href: `/admin/dashboard${fromParam}`, icon: icons.dashboard },
         ],
       });
     }
