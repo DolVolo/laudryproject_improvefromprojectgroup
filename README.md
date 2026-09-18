@@ -1,0 +1,3 @@
+# Laundry Shop
+
+Monorepo bootstrap.
