@@ -21,15 +21,16 @@ import {
   UpdateOrderDto,
 } from './dto/create-customer.dto';
 import { AccessTokenGuard } from '../../auth/guards/access-token.guard';
+import { StorageService } from '../../storage/storage.service';
 import { FilesInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
-import { extname } from 'path';
-import * as fs from 'fs';
-import * as path from 'path';
+import { memoryStorage } from 'multer';
 
 @Controller('customers')
 export class CustomersController {
-  constructor(private readonly customersService: CustomersService) {}
+  constructor(
+    private readonly customersService: CustomersService,
+    private readonly storageService: StorageService,
+  ) {}
 
   private readonly allSignedInRoles: Array<
     'user' | 'rider' | 'admin' | 'employee'
@@ -66,9 +67,22 @@ export class CustomersController {
     return [value];
   }
 
-  private normalizeOrderPayload(body: any, files?: Array<{ filename: string }>) {
-    const uploadedImages =
-      files?.map((file) => `/uploads/customerorder/${file.filename}`) || [];
+  private async uploadOrderImages(
+    files?: Array<{ buffer: Buffer; mimetype: string }>,
+  ): Promise<string[]> {
+    if (!files?.length) return [];
+    return Promise.all(
+      files.map((file) =>
+        this.storageService.uploadBuffer(
+          file.buffer,
+          'customerorder',
+          file.mimetype,
+        ),
+      ),
+    );
+  }
+
+  private normalizeOrderPayload(body: any, uploadedImages: string[] = []) {
     const bodyImages = this.toImageList(body?.images);
 
     return {
@@ -206,33 +220,18 @@ export class CustomersController {
   @Post('orders')
   @UseInterceptors(
     FilesInterceptor('images', 10, {
-      storage: diskStorage({
-        destination: (_req, _file, cb) => {
-          const uploadDir = path.join(process.cwd(), 'uploads', 'customerorder');
-          try {
-            if (!fs.existsSync(uploadDir)) {
-              fs.mkdirSync(uploadDir, { recursive: true });
-            }
-          } catch {
-            // ignore; multer will handle write errors
-          }
-          cb(null, uploadDir);
-        },
-        filename: (_req, file, cb) => {
-          const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-          const fileExt = extname(file.originalname || '').toLowerCase();
-          cb(null, `order-${uniqueSuffix}${fileExt || '.jpg'}`);
-        },
-      }),
+      storage: memoryStorage(),
+      limits: { fileSize: 15 * 1024 * 1024 },
     }),
   )
   async createOrder(
     @Request() req,
     @Body() body: CreateOrderDto,
-    @UploadedFiles() files: Array<{ filename: string }>,
+    @UploadedFiles() files: Array<{ buffer: Buffer; mimetype: string }>,
   ) {
     const userId = await this.ensureRole(req, this.customerActionRoles);
-    const normalized = this.normalizeOrderPayload(body, files);
+    const uploaded = await this.uploadOrderImages(files);
+    const normalized = this.normalizeOrderPayload(body, uploaded);
     return this.customersService.createOrder(userId, normalized);
   }
 
@@ -247,31 +246,15 @@ export class CustomersController {
   @Put('orders/:orderId')
   @UseInterceptors(
     FilesInterceptor('images', 10, {
-      storage: diskStorage({
-        destination: (_req, _file, cb) => {
-          const uploadDir = path.join(process.cwd(), 'uploads', 'customerorder');
-          try {
-            if (!fs.existsSync(uploadDir)) {
-              fs.mkdirSync(uploadDir, { recursive: true });
-            }
-          } catch {
-            // ignore; multer will handle write errors
-          }
-          cb(null, uploadDir);
-        },
-        filename: (_req, file, cb) => {
-          const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-          const fileExt = extname(file.originalname || '').toLowerCase();
-          cb(null, `order-${uniqueSuffix}${fileExt || '.jpg'}`);
-        },
-      }),
+      storage: memoryStorage(),
+      limits: { fileSize: 15 * 1024 * 1024 },
     }),
   )
   async updateOrder(
     @Param('orderId') orderId: string,
     @Request() req,
     @Body() dto: UpdateOrderDto,
-    @UploadedFiles() files: Array<{ filename: string }>,
+    @UploadedFiles() files: Array<{ buffer: Buffer; mimetype: string }>,
   ) {
     const userId = await this.ensureRole(req, this.customerActionRoles);
     const order = await this.customersService.findOrderById(orderId);
@@ -280,7 +263,8 @@ export class CustomersController {
       throw new ForbiddenException('Not your order');
     if (order.status !== 'pending')
       throw new ForbiddenException('Only pending orders can be edited');
-    const normalized = this.normalizeOrderPayload(dto, files);
+    const uploaded = await this.uploadOrderImages(files);
+    const normalized = this.normalizeOrderPayload(dto, uploaded);
     return this.customersService.updateOrder(orderId, normalized);
   }
 

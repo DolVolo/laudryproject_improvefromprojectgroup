@@ -28,6 +28,10 @@ services:
         sync: false
       - key: MAIL_FROM
         sync: false
+      # Image storage. Without this, uploads land on Render's ephemeral disk
+      # and disappear on every deploy.
+      - key: CLOUDINARY_URL
+        sync: false
       # Comma-separated list of allowed CORS origins (your Vercel URL).
       - key: FRONTEND_URL
         sync: false

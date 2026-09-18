@@ -81,14 +81,17 @@ CORS needs no extra work for preview URLs: `src/main.ts` already allows any
 
 ## Two things to know before you rely on this in production
 
-**Uploaded images do not survive on Render's free plan.** Order photos, shop
-photos and rider documents are written to `backend/uploads` on local disk
-(`src/users/customer/customers.controller.ts`, `src/map/map.service.ts`,
-`src/users/rider/rider.controller.ts`). Render's free instances get a fresh
-disk on every deploy and restart, so those files disappear while the database
-rows still point at them. Two ways out: attach a persistent disk (the
-commented `disk:` block in `render.yaml`, requires a paid instance), or move
-uploads to object storage such as Cloudflare R2 or S3.
+**Uploaded images go to Cloudinary.** Order photos, shop photos and rider
+documents are uploaded through `src/storage/storage.service.ts`, which stores
+them remotely and saves the returned `https://res.cloudinary.com/...` URL on
+the document. Set `CLOUDINARY_URL` for this to work.
+
+Without that variable the service falls back to writing `backend/uploads` on
+local disk, which is fine for local development but loses every image on
+Render, because free instances get a fresh disk on each deploy and restart.
+The startup log says which mode is active. Records created before this change
+still hold `/uploads/...` paths and are served by the static handler in
+`src/main.ts`, so old and new images coexist.
 
 **The free instance sleeps.** After 15 minutes without traffic Render spins the
 service down, and the next request pays roughly 50 seconds of cold start. For a
@@ -105,6 +108,7 @@ live demo, upgrade to the Starter plan or hit the health endpoint beforehand.
 | `JWT_ACCESS_EXPIRATION` / `JWT_REFRESH_EXPIRATION` | Seconds — 900 / 604800 |
 | `FRONTEND_URL` | Comma-separated CORS allowlist |
 | `GMAIL_USER` / `GMAIL_APP_PASSWORD` / `MAIL_FROM` | Forgot-password email |
+| `CLOUDINARY_URL` | Image storage. Unset = local disk, lost on redeploy |
 | `PORT` | Local only; Render sets it |
 
 **frontend/.env.local** — see `frontend/.env.example`

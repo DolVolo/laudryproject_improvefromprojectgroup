@@ -10,15 +10,13 @@ import {
   UploadedFiles,
 } from '@nestjs/common';
 import { RiderService } from './rider.service';
+import { StorageService } from '../../storage/storage.service';
 import { AccessTokenGuard } from '../../auth/guards/access-token.guard';
 import { RiderProfileDto } from './dto/rider-profile.dto';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
-import { extname } from 'path';
+import { memoryStorage } from 'multer';
 import { Delete, ForbiddenException } from '@nestjs/common';
 import { UsersService } from '../users.service';
-import * as fs from 'fs';
-import * as path from 'path';
 
 @Controller('rider')
 @UseGuards(AccessTokenGuard)
@@ -26,6 +24,7 @@ export class RiderController {
   constructor(
     private readonly riderService: RiderService,
     private readonly usersService: UsersService,
+    private readonly storageService: StorageService,
   ) {}
 
   private async ensureRole(
@@ -57,24 +56,8 @@ export class RiderController {
         { name: 'vehicleImage', maxCount: 1 },
       ],
       {
-        storage: diskStorage({
-          destination: (_req, _file, cb) => {
-            const uploadDir = path.join(process.cwd(), 'uploads', 'rider');
-            try {
-              if (!fs.existsSync(uploadDir)) {
-                fs.mkdirSync(uploadDir, { recursive: true });
-              }
-            } catch {
-              // ignore; let multer error if it cannot write
-            }
-            cb(null, uploadDir);
-          },
-          filename: (_req, file, cb) => {
-            const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-            const fileExt = extname(file.originalname || '').toLowerCase();
-            cb(null, `${file.fieldname}-${uniqueSuffix}${fileExt || '.jpg'}`);
-          },
-        }),
+        storage: memoryStorage(),
+        limits: { fileSize: 15 * 1024 * 1024 },
       },
     ),
   )
@@ -83,18 +66,28 @@ export class RiderController {
     @Body() dto: RiderProfileDto,
     @UploadedFiles()
     files: {
-      riderImage?: Array<{ filename: string }>;
-      vehicleImage?: Array<{ filename: string }>;
+      riderImage?: Array<{ buffer: Buffer; mimetype: string }>;
+      vehicleImage?: Array<{ buffer: Buffer; mimetype: string }>;
     },
   ) {
     const riderId = await this.ensureRole(req, ['rider', 'admin']);
 
-    const riderImageUrl = files?.riderImage?.[0]?.filename
-      ? `/uploads/rider/${files.riderImage[0].filename}`
+    const riderImage = files?.riderImage?.[0];
+    const riderImageUrl = riderImage
+      ? await this.storageService.uploadBuffer(
+          riderImage.buffer,
+          'rider',
+          riderImage.mimetype,
+        )
       : undefined;
 
-    const vehicleImageUrl = files?.vehicleImage?.[0]?.filename
-      ? `/uploads/rider/${files.vehicleImage[0].filename}`
+    const vehicleImage = files?.vehicleImage?.[0];
+    const vehicleImageUrl = vehicleImage
+      ? await this.storageService.uploadBuffer(
+          vehicleImage.buffer,
+          'rider',
+          vehicleImage.mimetype,
+        )
       : undefined;
 
     await this.riderService.updateProfile(

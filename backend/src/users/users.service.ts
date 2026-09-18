@@ -18,6 +18,7 @@ import { Order, OrderDocument } from './customer/schemas/order.schema';
 import { CreateCustomerDto } from './customer/dto/create-customer.dto';
 import { Shop } from '../map/schemas/shop.schema';
 import { OrderGateway } from '../realtime/order.gateway';
+import { StorageService } from '../storage/storage.service';
 
 type BanMode = 'unban' | 'permanent' | 'days';
 
@@ -34,6 +35,7 @@ export class UsersService {
     @InjectModel(Order.name) private orderModel: Model<OrderDocument>,
     @InjectModel(Shop.name) private shopModel: Model<Shop>,
     private readonly orderGateway: OrderGateway,
+    private readonly storageService: StorageService,
   ) {}
 
   private ensureCustomerOrderUploadDir(): string {
@@ -52,69 +54,21 @@ export class UsersService {
     return 'jpg';
   }
 
-  private persistOrderImages(images?: string[]): string[] {
+  private async persistOrderImages(images?: string[]): Promise<string[]> {
     if (!Array.isArray(images) || images.length === 0) return [];
 
-    let uploadDir: string | null = null;
-    try {
-      uploadDir = this.ensureCustomerOrderUploadDir();
-    } catch {
-      uploadDir = null;
-    }
-
-    return images.map((imageValue) => {
-      if (typeof imageValue !== 'string') return imageValue as any;
-
-      const dataUrlMatch = imageValue.match(
-        /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/,
-      );
-      if (!dataUrlMatch) {
-        return imageValue;
-      }
-
-      if (!uploadDir) {
-        return imageValue;
-      }
-
-      const mimeType = dataUrlMatch[1];
-      const base64Payload = dataUrlMatch[2];
-      const ext = this.dataUrlToFileExt(mimeType);
-      const fileName = `${Date.now()}-${Math.random().toString(16).slice(2)}.${ext}`;
-      const absolutePath = path.join(uploadDir, fileName);
-
-      try {
-        fs.writeFileSync(absolutePath, Buffer.from(base64Payload, 'base64'));
-      } catch {
-        return imageValue;
-      }
-
-      return `/uploads/customerorder/${fileName}`;
-    });
-  }
-
-  private deleteOrderImageByPath(imagePath?: string) {
-    if (!imagePath || !imagePath.startsWith('/uploads/customerorder/')) return;
-
-    const fileName = path.basename(imagePath);
-    const absolutePath = path.join(
-      process.cwd(),
-      'uploads',
-      'customerorder',
-      fileName,
+    return Promise.all(
+      images.map((imageValue) =>
+        typeof imageValue === 'string'
+          ? this.storageService.uploadDataUrl(imageValue, 'customerorder')
+          : (imageValue as any),
+      ),
     );
-
-    if (!fs.existsSync(absolutePath)) return;
-
-    try {
-      fs.unlinkSync(absolutePath);
-    } catch {
-      // ignore cleanup error
-    }
   }
 
-  private deleteOrderImages(images?: string[]) {
+  private async deleteOrderImages(images?: string[]): Promise<void> {
     if (!Array.isArray(images) || images.length === 0) return;
-    images.forEach((imagePath) => this.deleteOrderImageByPath(imagePath));
+    await Promise.all(images.map((image) => this.storageService.remove(image)));
   }
 
   private normalizeServiceTimeMinutes(value: unknown): number {
@@ -1280,7 +1234,7 @@ export class UsersService {
           }
         : undefined;
 
-    const savedImages = this.persistOrderImages(data.images);
+    const savedImages = await this.persistOrderImages(data.images);
     const pickupType = data.pickupType || 'now';
     const pickupAt = data.pickupAt ? new Date(data.pickupAt) : null;
 
@@ -1353,7 +1307,7 @@ export class UsersService {
     if (data.description !== undefined)
       updateData.description = data.description;
     if (data.images !== undefined) {
-      const nextImages = this.persistOrderImages(data.images);
+      const nextImages = await this.persistOrderImages(data.images);
       updateData.images = nextImages;
 
       const keptImages = new Set(
@@ -1362,7 +1316,7 @@ export class UsersService {
       const removedImages = previousImages.filter(
         (item) => typeof item === 'string' && !keptImages.has(item),
       );
-      this.deleteOrderImages(removedImages);
+      await this.deleteOrderImages(removedImages);
     }
     if (data.contactPhone) updateData.contactPhone = data.contactPhone;
     if (data.laundryType !== undefined)
@@ -1438,7 +1392,7 @@ export class UsersService {
   async deleteOrder(orderId: string) {
     const deleted = await this.orderModel.findByIdAndDelete(orderId).exec();
     if (deleted) {
-      this.deleteOrderImages(deleted.images);
+      await this.deleteOrderImages(deleted.images);
     }
     return deleted;
   }
@@ -1451,7 +1405,7 @@ export class UsersService {
     const isTerminalStatus = status === 'completed' || status === 'cancelled';
     if (isTerminalStatus) {
       updated.completedAt = new Date();
-      this.deleteOrderImages(updated.images);
+      await this.deleteOrderImages(updated.images);
       updated.images = [];
     }
 
@@ -1610,7 +1564,7 @@ export class UsersService {
 
     order.status = 'completed';
     order.completedAt = new Date();
-    this.deleteOrderImages(order.images);
+    await this.deleteOrderImages(order.images);
     order.images = [];
     await order.save();
 

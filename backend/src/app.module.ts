@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 
 import { MongooseModule } from '@nestjs/mongoose';
+import { StorageModule } from './storage/storage.module';
 import { UsersCoreModule } from './users/users-core.module';
 import { AdminModule } from './users/admin/admin.module';
 import { CustomersModule } from './users/customer/customers.module';
@@ -50,6 +51,7 @@ import { APP_GUARD } from '@nestjs/core';
         retryReads: true,
       }),
     }),
+    StorageModule,
     UsersCoreModule,
     AdminModule,
     CustomersModule,

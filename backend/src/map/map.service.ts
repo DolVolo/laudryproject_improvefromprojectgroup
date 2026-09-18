@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
+import { StorageService } from '../storage/storage.service';
 import { Model } from 'mongoose';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -22,6 +23,7 @@ export class MapService {
     private orderLocationModel: Model<OrderLocation>,
     @InjectModel(Shop.name) private shopModel: Model<Shop>,
     @InjectModel(User.name) private userModel: Model<User>,
+    private readonly storageService: StorageService,
   ) {}
 
   private migrationDone = false;
@@ -307,64 +309,13 @@ export class MapService {
     await this.addressModel.deleteMany({ ownerType: 'shop' });
   }
 
-  private ensureShopUploadDir(): string {
-    const uploadDir = path.join(process.cwd(), 'uploads', 'shop');
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    return uploadDir;
-  }
-
-  private dataUrlToFileExt(mimeType: string): string {
-    if (mimeType === 'image/jpeg' || mimeType === 'image/jpg') return 'jpg';
-    if (mimeType === 'image/png') return 'png';
-    if (mimeType === 'image/webp') return 'webp';
-    if (mimeType === 'image/gif') return 'gif';
-    return 'jpg';
-  }
-
-  private persistShopPhoto(photoImage?: string): string {
+  private async persistShopPhoto(photoImage?: string): Promise<string> {
     if (!photoImage || typeof photoImage !== 'string') return '';
-
-    if (
-      photoImage.startsWith('/uploads/shop/') ||
-      photoImage.startsWith('http://') ||
-      photoImage.startsWith('https://')
-    ) {
-      return photoImage;
-    }
-
-    const match = photoImage.match(
-      /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/,
-    );
-    if (!match) {
-      return photoImage;
-    }
-
-    const mimeType = match[1];
-    const payload = match[2];
-    const ext = this.dataUrlToFileExt(mimeType);
-    const fileName = `${Date.now()}-${Math.random().toString(16).slice(2)}.${ext}`;
-    const uploadDir = this.ensureShopUploadDir();
-    const absolutePath = path.join(uploadDir, fileName);
-
-    fs.writeFileSync(absolutePath, Buffer.from(payload, 'base64'));
-
-    return `/uploads/shop/${fileName}`;
+    return this.storageService.uploadDataUrl(photoImage, 'shop');
   }
 
-  private deleteShopPhotoByPath(relativePath?: string) {
-    if (!relativePath || !relativePath.startsWith('/uploads/shop/')) return;
-
-    const fileName = path.basename(relativePath);
-    const absolutePath = path.join(process.cwd(), 'uploads', 'shop', fileName);
-    if (fs.existsSync(absolutePath)) {
-      try {
-        fs.unlinkSync(absolutePath);
-      } catch {
-        // ignore cleanup error
-      }
-    }
+  private async deleteShopPhotoByPath(url?: string): Promise<void> {
+    await this.storageService.remove(url);
   }
 
   private toLngLat(input: any): [number, number] | null {
@@ -429,7 +380,7 @@ export class MapService {
   async createShopPin(ownerId: string, payload: any, creatorRole: string) {
     const location = this.normalizeLocation(payload.location);
     const shopName = payload.shopName || payload.label || 'Laundry Shop';
-    const savedPhoto = this.persistShopPhoto(payload.photoImage || '');
+    const savedPhoto = await this.persistShopPhoto(payload.photoImage || '');
     const isAdminCreator = creatorRole === 'admin';
     const machineConfig = this.normalizeMachineSizeConfig(
       payload.machineSizeConfig,
@@ -517,10 +468,10 @@ export class MapService {
       );
     }
     if (payload.photoImage !== undefined) {
-      const nextPhoto = this.persistShopPhoto(payload.photoImage);
+      const nextPhoto = await this.persistShopPhoto(payload.photoImage);
       updateData.photoImage = nextPhoto;
       if (target.photoImage && target.photoImage !== nextPhoto) {
-        this.deleteShopPhotoByPath(target.photoImage);
+        await this.deleteShopPhotoByPath(target.photoImage);
       }
     }
     if (payload.location !== undefined)
@@ -562,7 +513,7 @@ export class MapService {
     const deleted = deletedFromShops || deletedFromAddresses;
 
     if (deleted?.photoImage) {
-      this.deleteShopPhotoByPath(deleted.photoImage);
+      await this.deleteShopPhotoByPath(deleted.photoImage);
     }
 
     return deleted;
