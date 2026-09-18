@@ -59,8 +59,11 @@ async function bootstrap() {
   app.setGlobalPrefix('api');
   app.use('/uploads', express.static(join(process.cwd(), 'uploads')));
   const port = process.env.PORT ?? 3000;
-  await app.listen(port);
-  console.log(`✅ Server running on http://localhost:${port}`);
+  // Bind to 0.0.0.0, not the default loopback-first behaviour: hosts like
+  // Render route traffic from outside the container and cannot reach a
+  // process that is only listening on localhost.
+  await app.listen(port, '0.0.0.0');
+  console.log(`✅ Server listening on 0.0.0.0:${port}`);
 }
 
 bootstrap();
