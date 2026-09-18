@@ -38,8 +38,12 @@ import { APP_GUARD } from '@nestjs/core';
         serverSelectionTimeoutMS: 15000,
         socketTimeoutMS: 45000,
         connectTimeoutMS: 15000,
-        autoCreate: false,
-        autoIndex: false,
+        // Default to true so a fresh/empty database gets its collections and
+        // its unique indexes (notably unique email) built on first boot.
+        // Set MONGO_AUTO_INDEX=false once the indexes exist to skip the
+        // startup check on an established database.
+        autoCreate: configService.get<string>('MONGO_AUTO_INDEX') !== 'false',
+        autoIndex: configService.get<string>('MONGO_AUTO_INDEX') !== 'false',
         maxPoolSize: 10,
         minPoolSize: 1,
         retryWrites: true,
