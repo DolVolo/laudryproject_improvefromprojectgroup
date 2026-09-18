@@ -1,0 +1,44 @@
+# Render Blueprint — deploys the NestJS API as a persistent web service.
+# Import at: https://dashboard.render.com/blueprints  ->  New Blueprint Instance
+services:
+  - type: web
+    name: laundry-shop-api
+    runtime: node
+    plan: free            # upgrade to "starter" to stop the 15-min idle spin-down
+    region: singapore
+    rootDir: backend
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start:prod
+    healthCheckPath: /api
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22.11.0"
+      # Secrets — set these in the Render dashboard, they are never committed.
+      - key: MONGO_URI
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: GMAIL_USER
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false
+      - key: MAIL_FROM
+        sync: false
+      # Comma-separated list of allowed CORS origins (your Vercel URL).
+      - key: FRONTEND_URL
+        sync: false
+      - key: JWT_ACCESS_EXPIRATION
+        value: "900"
+      - key: JWT_REFRESH_EXPIRATION
+        value: "604800"
+
+    # Uploaded images are written to backend/uploads on local disk. On the free
+    # plan that disk is WIPED on every deploy and restart. Uncomment this block
+    # (requires a paid instance type) to keep them, or move uploads to S3/R2.
+    # disk:
+    #   name: laundry-uploads
+    #   mountPath: /opt/render/project/src/backend/uploads
+    #   sizeGB: 1

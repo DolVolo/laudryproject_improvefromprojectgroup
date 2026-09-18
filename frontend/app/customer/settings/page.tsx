@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { FormEvent, Suspense, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '@/lib/api';
 import 'leaflet/dist/leaflet.css';
 
@@ -70,7 +70,7 @@ function getRoleFromAccessToken(token: string | null): 'user' | 'rider' | 'admin
   }
 }
 
-export default function CustomerSettingsPage() {
+function CustomerSettingsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [activeTab, setActiveTab] = useState<TabType>('basic');
@@ -882,5 +882,19 @@ export default function CustomerSettingsPage() {
         </div>
       </footer>
     </div>
+  );
+}
+
+export default function CustomerSettingsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center bg-slate-50 text-blue-900">
+          Loading...
+        </div>
+      }
+    >
+      <CustomerSettingsContent />
+    </Suspense>
   );
 }

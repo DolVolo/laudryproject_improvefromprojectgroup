@@ -89,8 +89,6 @@ export default function RiderMapClient({ orders, shops = [], userLocation, onAcc
         zoom: 13
     });
 
-    const mapInstanceRef = useRef<any>(null);
-
     // Fix for Leaflet default icons
     const icon = useMemo(() => {
         if (typeof window === 'undefined') return null;
