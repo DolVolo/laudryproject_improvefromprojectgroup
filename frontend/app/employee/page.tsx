@@ -1,0 +1,577 @@
+"use client";
+
+import Link from 'next/link';
+import { useEffect, useRef, useState } from 'react';
+import { apiFetch, API_BASE_URL } from '@/lib/api';
+import { fetchRoadRoute } from '@/lib/road-route';
+
+/**
+ * =============================================================================
+ * หน้า Employee Dashboard
+ * =============================================================================
+ * 
+ * แสดงแผนที่พร้อมตำแหน่งร้านซักที่พนักงานดูแลและไรเดอร์ที่กำลังเดินทางมา
+ * 
+ * การใช้เส้นทาง:
+ * - เมื่อมีไรเดอร์กำลังนำผ้ามาส่งร้าน (picked_up/laundry_done)
+ * - เรียก fetchRoadRoute() คำนวณเส้นทางจากไรเดอร์ถึงร้าน
+ * - วาด polyline บนแผนที่ให้เห็นเส้นทางไรเดอร์ที่กำลังเข้าร้าน
+ * =============================================================================
+ */
+
+type Shop = {
+  _id: string;
+  shopName?: string;
+  label?: string;
+  phoneNumber?: string;
+  photoImage?: string;
+  createdAt?: string;
+  distanceKm?: number;
+  location?: { coordinates: number[] };
+};
+
+type MyEmployeeProfile = {
+  _id: string;
+  role?: 'user' | 'rider' | 'employee' | 'admin';
+  assignedShopId?: string | null;
+  assignedShopIds?: string[];
+  joinRequestShopId?: string | null;
+  joinRequestStatus?: 'none' | 'pending' | 'rejected';
+};
+
+type LeafletMarker = {
+  addTo: (map: LeafletMap) => LeafletMarker;
+  bindPopup: (content: string) => LeafletMarker;
+  openPopup: () => LeafletMarker;
+  remove: () => void;
+};
+
+type LeafletCircleMarker = {
+  addTo: (map: LeafletMap) => LeafletCircleMarker;
+  bindPopup: (content: string) => LeafletCircleMarker;
+  openPopup: () => LeafletCircleMarker;
+  remove: () => void;
+};
+
+// ประเภท polyline สำหรับวาดเส้นทางบนแผนที่ (Leaflet)
+type LeafletPolyline = {
+  addTo: (map: LeafletMap) => LeafletPolyline;
+  bindPopup: (content: string) => LeafletPolyline;
+  remove: () => void;
+};
+
+type LeafletMap = {
+  setView: (center: [number, number], zoom: number) => void;
+  invalidateSize: () => void;
+  remove: () => void;
+};
+
+type LeafletLib = {
+  map: (container: HTMLElement, options: { center: [number, number]; zoom: number }) => LeafletMap;
+  tileLayer: (url: string, options: { maxZoom: number }) => { addTo: (map: LeafletMap) => void };
+  marker: (latLng: [number, number], options?: Record<string, unknown>) => LeafletMarker;
+  icon: (options: Record<string, unknown>) => unknown;
+  circleMarker: (latLng: [number, number], options?: { radius?: number; color?: string; fillColor?: string; fillOpacity?: number; weight?: number }) => LeafletCircleMarker;
+  polyline: (latLngs: [number, number][], options?: { color?: string; weight?: number; opacity?: number }) => LeafletPolyline;
+};
+
+type ShopOrder = {
+  _id: string;
+  riderId?: string | { _id?: string } | null;
+  status?: string;
+  createdAt?: string;
+};
+
+/**
+ * RiderOverlay เก็บข้อมูลไรเดอร์แต่ละคนที่กำลังเดินทาง
+ * - riderLat/riderLng: ตำแหน่งปัจจุบันของไรเดอร์
+ * - routePoints: เส้นทางจาก fetchRoadRoute() สำหรับวาด polyline
+ * - status: สถานะของออเดอร์
+ */
+type RiderOverlay = {
+  key: string;
+  riderId: string;
+  riderLat: number;
+  riderLng: number;
+  shopId: string;
+  shopName: string;
+  status: string;
+  routePoints: [number, number][];
+};
+
+async function loadLeaflet() {
+  if (typeof window === 'undefined') return null;
+  const w = window as unknown as { L?: LeafletLib };
+  if (w.L) return w.L;
+
+  if (!document.querySelector('link[data-leaflet="true"]')) {
+    const css = document.createElement('link');
+    css.rel = 'stylesheet';
+    css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+    css.setAttribute('data-leaflet', 'true');
+    document.head.appendChild(css);
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const existing = document.querySelector('script[data-leaflet="true"]') as HTMLScriptElement | null;
+    if (existing) {
+      if ((window as any).L) {
+        resolve();
+        return;
+      }
+      existing.addEventListener('load', () => resolve());
+      existing.addEventListener('error', () => reject(new Error('Failed to load leaflet')));
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+    script.async = true;
+    script.setAttribute('data-leaflet', 'true');
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Failed to load leaflet'));
+    document.body.appendChild(script);
+  });
+
+  return (window as unknown as { L?: LeafletLib }).L ?? null;
+}
+
+function fixLeafletIcons(L: LeafletLib) {
+  const CDN = 'https://unpkg.com/leaflet@1.9.4/dist/images';
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const LFull = L as any;
+  if (LFull.Icon?.Default?.prototype?._getIconUrl) {
+    delete LFull.Icon.Default.prototype._getIconUrl;
+  }
+  if (LFull.Icon?.Default?.mergeOptions) {
+    LFull.Icon.Default.mergeOptions({
+      iconUrl: `${CDN}/marker-icon.png`,
+      iconRetinaUrl: `${CDN}/marker-icon-2x.png`,
+      shadowUrl: `${CDN}/marker-shadow.png`,
+    });
+  }
+}
+
+function makeDefaultIcon(L: LeafletLib) {
+  const CDN = 'https://unpkg.com/leaflet@1.9.4/dist/images';
+  return L.icon({
+    iconUrl: `${CDN}/marker-icon.png`,
+    iconRetinaUrl: `${CDN}/marker-icon-2x.png`,
+    shadowUrl: `${CDN}/marker-shadow.png`,
+    iconSize: [25, 41],
+    iconAnchor: [12, 41],
+    popupAnchor: [1, -34],
+    shadowSize: [41, 41],
+  });
+}
+
+const BACKEND_BASE_URL = API_BASE_URL.replace(/\/api$/, '');
+
+function toImageSrc(input?: string) {
+  if (!input) return '';
+  if (input.startsWith('http://') || input.startsWith('https://') || input.startsWith('data:image/')) {
+    return input;
+  }
+  if (input.startsWith('/')) {
+    return `${BACKEND_BASE_URL}${input}`;
+  }
+  return input;
+}
+
+export default function EmployeePage() {
+  const [shops, setShops] = useState<Shop[]>([]);
+  const [shopOrderCountById, setShopOrderCountById] = useState<Record<string, number>>({});
+  const [riderOverlays, setRiderOverlays] = useState<RiderOverlay[]>([]);
+  const [search, setSearch] = useState('');
+  const [sortMode, setSortMode] = useState<'alpha-asc' | 'alpha-desc' | 'newest' | 'oldest'>('alpha-asc');
+  const [me, setMe] = useState<MyEmployeeProfile | null>(null);
+  const [requestingShopId, setRequestingShopId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const mapContainerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<LeafletMap | null>(null);
+  const leafletRef = useRef<LeafletLib | null>(null);
+  const markersRef = useRef<LeafletMarker[]>([]);
+  const riderMarkersRef = useRef<LeafletCircleMarker[]>([]);
+  const riderRouteLinesRef = useRef<LeafletPolyline[]>([]);
+  const markerByShopIdRef = useRef<Record<string, LeafletMarker>>({});
+  const shopViewInitializedRef = useRef(false);
+
+  const isMemberOfShop = (shopId: string) => {
+    if (!me || !shopId) return false;
+    if (me.assignedShopId && String(me.assignedShopId) === String(shopId)) return true;
+    return Array.isArray(me.assignedShopIds) && me.assignedShopIds.map(String).includes(String(shopId));
+  };
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      try {
+        const meData = (await apiFetch('/customers/me')) as MyEmployeeProfile;
+        setMe(meData);
+
+        // Fetch ALL visible shops (not limited by distance) so employee can see every shop
+        const data = await apiFetch('/map/shops');
+        setShops(Array.isArray(data) ? data : []);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'Failed to load shops';
+        setError(msg);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    load();
+  }, []);
+
+  const requestJoinShop = async (shopId: string) => {
+    try {
+      setRequestingShopId(shopId);
+      setError(null);
+      await apiFetch(`/employee/shops/${shopId}/join-request`, { method: 'POST' });
+      const meData = (await apiFetch('/customers/me')) as MyEmployeeProfile;
+      setMe(meData);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to request shop join');
+    } finally {
+      setRequestingShopId(null);
+    }
+  };
+
+  const filteredShops = shops
+    .filter((shop) => {
+      const q = search.trim().toLowerCase();
+      if (!q) return true;
+      const name = (shop.shopName || shop.label || '').toLowerCase();
+      return name.includes(q);
+    })
+    .sort((a, b) => {
+      const aName = a.shopName || a.label || '';
+      const bName = b.shopName || b.label || '';
+
+      if (sortMode === 'alpha-asc') return aName.localeCompare(bName);
+      if (sortMode === 'alpha-desc') return bName.localeCompare(aName);
+
+      const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      if (sortMode === 'newest') return bTime - aTime;
+      return aTime - bTime;
+    });
+
+  const focusShopOnMap = (shop: Shop) => {
+    const coords = shop.location?.coordinates;
+    if (!mapRef.current || !Array.isArray(coords) || coords.length < 2) return;
+    mapRef.current.setView([coords[1], coords[0]], 15);
+    const marker = markerByShopIdRef.current[shop._id];
+    marker?.openPopup();
+  };
+
+  useEffect(() => {
+    let mounted = true;
+
+    const setup = async () => {
+      const L = await loadLeaflet();
+      if (!mounted || !L || !mapContainerRef.current || mapRef.current) return;
+
+      leafletRef.current = L;
+      fixLeafletIcons(L);
+      const map = L.map(mapContainerRef.current, { center: [13.7563, 100.5018], zoom: 12 });
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+      mapRef.current = map;
+      setTimeout(() => map.invalidateSize(), 50);
+    };
+
+    setup();
+
+    return () => {
+      mounted = false;
+      markersRef.current.forEach((m) => m.remove());
+      markersRef.current = [];
+      mapRef.current?.remove();
+      mapRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    const L = leafletRef.current;
+    if (!map || !L) return;
+
+    markersRef.current.forEach((m) => m.remove());
+    markersRef.current = [];
+    markerByShopIdRef.current = {};
+
+    shops.forEach((shop) => {
+      const coords = shop.location?.coordinates;
+      if (!Array.isArray(coords) || coords.length < 2) return;
+
+      const name = shop.shopName || shop.label || 'Laundry Shop';
+      const imageSrc = toImageSrc(shop.photoImage);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const shopDivIcon = (L as any).divIcon({
+        className: 'employee-shop-washer-icon',
+        html: `<div style="width:34px;height:34px;background:#7c3aed;border-radius:50%;border:2.5px solid white;box-shadow:0 2px 8px rgba(124,58,237,0.4);display:flex;align-items:center;justify-content:center"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="3"/><circle cx="12" cy="14" r="5"/><circle cx="12" cy="14" r="2"/><circle cx="7" cy="5.5" r="1" fill="white" stroke="none"/><circle cx="10" cy="5.5" r="1" fill="white" stroke="none"/><line x1="14" y1="5.5" x2="19" y2="5.5"/></svg></div>`,
+        iconSize: [34, 34],
+        iconAnchor: [17, 17],
+      });
+      const marker = L.marker([coords[1], coords[0]], { icon: shopDivIcon } as any)
+        .bindPopup(
+          `<div style="min-width:180px"><div style="font-weight:700;margin-bottom:6px">${name}</div>${
+            imageSrc
+              ? `<img src="${imageSrc}" alt="${name}" style="width:100%;height:96px;object-fit:cover;border-radius:8px;margin-bottom:6px" onerror="this.style.display='none'" />`
+              : ''
+          }<div style="font-size:12px;color:#475569">${shop.phoneNumber || '-'}</div></div>`,
+        )
+        .addTo(map);
+      markersRef.current.push(marker);
+      markerByShopIdRef.current[shop._id] = marker;
+    });
+
+    const first = shops.find((s) => Array.isArray(s.location?.coordinates) && s.location!.coordinates.length >= 2);
+    if (first?.location?.coordinates && !shopViewInitializedRef.current) {
+      shopViewInitializedRef.current = true;
+      map.setView([first.location.coordinates[1], first.location.coordinates[0]], 14);
+    }
+  }, [shops]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchShopOrdersAndRiders = async () => {
+      if (shops.length === 0) {
+        setShopOrderCountById({});
+        setRiderOverlays([]);
+        return;
+      }
+
+      const counts: Record<string, number> = {};
+      const overlays: RiderOverlay[] = [];
+      const accessibleShopIds = new Set(
+        shops
+          .filter((shop) => isMemberOfShop(shop._id))
+          .map((shop) => String(shop._id)),
+      );
+
+      await Promise.all(
+        shops.map(async (shop) => {
+          try {
+            const shopName = shop.shopName || shop.label || 'Laundry Shop';
+            const shopCoords = shop.location?.coordinates;
+            const shopLat = Array.isArray(shopCoords) && shopCoords.length >= 2 ? shopCoords[1] : null;
+            const shopLng = Array.isArray(shopCoords) && shopCoords.length >= 2 ? shopCoords[0] : null;
+
+            const ordersData = await apiFetch(`/employee/shops/${shop._id}/orders`);
+            const orders = Array.isArray(ordersData) ? (ordersData as ShopOrder[]) : [];
+            counts[shop._id] = orders.length;
+
+            const latestOrderByRider = new Map<string, ShopOrder>();
+            for (const order of orders) {
+              const riderIdRaw = order?.riderId;
+              const riderId =
+                typeof riderIdRaw === 'string'
+                  ? riderIdRaw
+                  : riderIdRaw && typeof riderIdRaw === 'object' && typeof riderIdRaw._id === 'string'
+                    ? riderIdRaw._id
+                    : '';
+
+              if (!riderId) continue;
+              if (!latestOrderByRider.has(riderId)) {
+                latestOrderByRider.set(riderId, order);
+              }
+            }
+
+            for (const [riderId, order] of latestOrderByRider.entries()) {
+              if (!accessibleShopIds.has(String(shop._id))) continue;
+
+              try {
+                // ดึงตำแหน่งไรเดอร์แบบ real-time
+                const riderLocation = await apiFetch(`/rider/location/${riderId}`);
+                const riderCoords = riderLocation?.location?.coordinates;
+                if (!Array.isArray(riderCoords) || riderCoords.length < 2) continue;
+
+                const riderLng = Number(riderCoords[0]);
+                const riderLat = Number(riderCoords[1]);
+                if (!Number.isFinite(riderLat) || !Number.isFinite(riderLng)) continue;
+
+                let routePoints: [number, number][] = [];  // เส้นทางสำหรับวาด polyline
+                const status = String(order?.status || 'unknown');
+                // แสดงเส้นทางไปร้านเฉพาะสถานะ picked_up (กำลังเอาผ้ามาส่ง) หรือ laundry_done (กำลังมารับ)
+                const shouldShowRouteToShop = ['picked_up', 'laundry_done'].includes(status);
+
+                if (shouldShowRouteToShop && Number.isFinite(shopLat) && Number.isFinite(shopLng)) {
+                  // เรียก OSRM API คำนวณเส้นทางถนนจากไรเดอร์ถึงร้าน
+                  const route = await fetchRoadRoute([riderLat, riderLng], [Number(shopLat), Number(shopLng)]);
+                  routePoints = route.points; // จุดพิกัดเส้นทาง
+                }
+
+                overlays.push({
+                  key: `${shop._id}-${riderId}`,
+                  riderId,
+                  riderLat,
+                  riderLng,
+                  shopId: shop._id,
+                  shopName,
+                  status,
+                  routePoints,
+                });
+              } catch {
+                // ignore rider location fetch errors
+              }
+            }
+          } catch {
+            counts[shop._id] = counts[shop._id] ?? 0;
+          }
+        }),
+      );
+
+      if (cancelled) return;
+      setShopOrderCountById(counts);
+      setRiderOverlays(overlays);
+    };
+
+    fetchShopOrdersAndRiders();
+    const interval = window.setInterval(fetchShopOrdersAndRiders, 10000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [shops]);
+
+/**
+   * =========================================================================
+   * useEffect: วาดเส้นทางไรเดอร์บนแผนที่
+   * =========================================================================
+   * 
+   * วาด polyline และ pin ไรเดอร์บนแผนที่ตามข้อมูล riderOverlays
+   * - เส้นทางสีฟ้าแสดงไรเดอร์ที่กำลังมาร้าน
+   * - ปักหมุดตำแหน่งไรเดอร์เป็นจุดสีฟ้า
+   * - จุดหมายปลายทาง (ร้าน) มี pin อยู่แล้ว ไม่ต้องเพิ่ม
+   * =========================================================================
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    const L = leafletRef.current;
+    if (!map || !L) return;
+
+    // ล้าง pin/polyline เดิมก่อนวาดใหม่
+    riderMarkersRef.current.forEach((item) => item.remove());
+    riderMarkersRef.current = [];
+    riderRouteLinesRef.current.forEach((line) => line.remove());
+    riderRouteLinesRef.current = [];
+
+    // วนลูปไรเดอร์แต่ละคน
+    riderOverlays.forEach((overlay) => {
+      // วาดเส้นทางถ้ามีข้อมูล (points >= 2)
+      if (overlay.routePoints.length >= 2) {
+        // สีเส้นทางตามสถานะ: picked_up = น้ำเงิน (ไปส่งร้าน), laundry_done = ส้ม (ไปรับผ้า)
+        const isPickingUp = overlay.status === 'laundry_done';
+        const routeColor = isPickingUp ? '#f97316' : '#2563eb';
+        const routeLine = L.polyline(overlay.routePoints, {
+          color: routeColor,
+          weight: 4,
+          opacity: 0.85,
+        })
+          .bindPopup(`<div style="font-weight:700">Rider route to ${overlay.shopName}</div><div style="font-size:12px;color:#475569">Status: ${overlay.status.replace(/_/g, ' ')}</div><div style="font-size:11px;color:${routeColor};font-weight:600;margin-top:4px">${isPickingUp ? '🔶 ไปรับผ้า (Pickup)' : '🔷 ไปส่งผ้า (Delivery)'}</div>`)
+          .addTo(map);
+        riderRouteLinesRef.current.push(routeLine);
+      }
+
+      // ปักหมุดตำแหน่งไรเดอร์ — สีตามสถานะ
+      const isPickingUp = overlay.status === 'laundry_done';
+      const riderDiv = document.createElement('div');
+      riderDiv.innerHTML = `<div style="width:34px;height:34px;background:${isPickingUp ? '#f97316' : '#2563eb'};border-radius:50%;border:2.5px solid white;box-shadow:0 2px 8px ${isPickingUp ? 'rgba(249,115,22,0.4)' : 'rgba(37,99,235,0.4)'};display:flex;align-items:center;justify-content:center"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17h2a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2z"/><path d="M14 17h2a2 2 0 0 0 2-2v-3a2 2 0 0 0-.586-1.414l-3-3A2 2 0 0 0 13 7h-2a1 1 0 0 0-1 1v7a2 2 0 0 0 2 2z"/><circle cx="7" cy="19" r="2"/><circle cx="16" cy="19" r="2"/></svg></div>`;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const riderDivIcon = (L as any).divIcon({ className: 'employee-rider-car-icon', html: riderDiv.innerHTML, iconSize: [34, 34], iconAnchor: [17, 17] });
+      const riderPin = L.marker([overlay.riderLat, overlay.riderLng], { icon: riderDivIcon } as any)
+        .bindPopup(`<div style="min-width:170px"><div style="font-weight:700;margin-bottom:4px">Rider</div><div style="font-size:12px;color:#475569">Shop: ${overlay.shopName}</div><div style="font-size:12px;color:#475569">Status: ${overlay.status.replace(/_/g, ' ')}</div></div>`)
+        .addTo(map);
+
+      riderMarkersRef.current.push(riderPin as any);
+    });
+  }, [riderOverlays]);
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-3xl font-black text-blue-900 tracking-tight">Shop Map</h1>
+        <p className="text-blue-700/60 text-sm font-medium">Select a pinned shop and enter to update laundry progress.</p>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          type="text"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Search shop name..."
+          className="w-72 rounded-xl border border-blue-100 bg-white px-3 py-2 text-sm font-medium text-blue-900 outline-none focus:border-blue-300"
+        />
+        <select
+          value={sortMode}
+          onChange={(event) => setSortMode(event.target.value as 'alpha-asc' | 'alpha-desc' | 'newest' | 'oldest')}
+          className="rounded-xl border border-blue-100 bg-white px-3 py-2 text-sm font-semibold text-blue-900"
+        >
+          <option value="alpha-asc">A-Z</option>
+          <option value="alpha-desc">Z-A</option>
+          <option value="newest">Newest</option>
+          <option value="oldest">Oldest</option>
+        </select>
+      </div>
+
+      <div className="h-[420px] w-full overflow-hidden rounded-3xl border-4 border-white bg-white shadow-xl shadow-slate-200/50">
+        <div ref={mapContainerRef} className="h-full w-full" />
+      </div>
+
+      {loading && <p className="text-sm text-blue-700/70">Loading nearby shops...</p>}
+      {error && <p className="text-sm text-rose-600">Error: {error}</p>}
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {filteredShops.map((shop) => (
+          <div key={shop._id} onClick={() => focusShopOnMap(shop)} className="cursor-pointer rounded-2xl border border-slate-100 bg-white p-4 shadow-sm hover:border-blue-200">
+            {toImageSrc(shop.photoImage) ? (
+              <img
+                src={toImageSrc(shop.photoImage)}
+                alt={shop.shopName || shop.label || 'Laundry Shop'}
+                className="mb-3 h-28 w-full rounded-xl object-cover"
+              />
+            ) : null}
+            <h3 className="text-sm font-black text-blue-900">{shop.shopName || shop.label || 'Laundry Shop'}</h3>
+            <p className="mt-1 text-xs font-semibold text-blue-600">☎ {shop.phoneNumber || '-'}</p>
+            <p className="mt-1 text-xs font-semibold text-blue-500">{shop.distanceKm != null ? `${shop.distanceKm} km` : '-'}</p>
+            <p className="mt-1 text-xs font-black text-indigo-600">Orders in shop: {shopOrderCountById[shop._id] ?? 0}</p>
+
+            {isMemberOfShop(shop._id) || me?.role === 'admin' ? (
+              <Link
+                href={`/employee/shop/${shop._id}`}
+                onClick={(event) => event.stopPropagation()}
+                className="mt-3 inline-flex w-full items-center justify-center rounded-xl border border-blue-200 px-3 py-2 text-xs font-black uppercase tracking-widest text-blue-700 hover:bg-blue-100"
+              >
+                Enter Shop ({shopOrderCountById[shop._id] ?? 0})
+              </Link>
+            ) : me?.joinRequestStatus === 'pending' && me?.joinRequestShopId === shop._id ? (
+              <button
+                disabled
+                onClick={(event) => event.stopPropagation()}
+                className="mt-3 inline-flex w-full items-center justify-center rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-black uppercase tracking-widest text-amber-700"
+              >
+                Request Pending
+              </button>
+            ) : (
+              <button
+                onClick={(event) => {
+                  event.stopPropagation();
+                  requestJoinShop(shop._id);
+                }}
+                disabled={requestingShopId === shop._id}
+                className="mt-3 inline-flex w-full items-center justify-center rounded-xl border border-blue-200 px-3 py-2 text-xs font-black uppercase tracking-widest text-blue-700 hover:bg-blue-100 disabled:opacity-50"
+              >
+                {requestingShopId === shop._id ? 'Requesting...' : 'Request Join Shop'}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
