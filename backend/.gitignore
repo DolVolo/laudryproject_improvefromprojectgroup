@@ -54,3 +54,7 @@ pids
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Uploaded images. Real uploads go to Cloudinary (src/storage/storage.service.ts);
+# this directory is only the local-development fallback.
+/uploads

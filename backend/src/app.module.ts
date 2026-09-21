@@ -4,6 +4,8 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 
 import { MongooseModule } from '@nestjs/mongoose';
 import { StorageModule } from './storage/storage.module';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
 import { UsersCoreModule } from './users/users-core.module';
 import { AdminModule } from './users/admin/admin.module';
 import { CustomersModule } from './users/customer/customers.module';
@@ -63,6 +65,10 @@ import { APP_GUARD } from '@nestjs/core';
 
   // *** สำหรับการตั้งค่า global guard กรณีกันโดนยิง API รัว ๆ ทั้งระบบ ThrottlerGuard ***
 
-  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
+  controllers: [AppController],
+  providers: [
+    AppService,
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+  ],
 })
 export class AppModule {}
