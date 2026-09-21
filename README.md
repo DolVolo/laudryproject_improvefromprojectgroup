@@ -57,8 +57,8 @@
 ต้องมี Node.js 22, บัญชี MongoDB Atlas และ (ถ้าต้องการให้รูปไม่หาย) บัญชี Cloudinary
 
 ```bash
-git clone https://github.com/DolVolo/laudryproject_improvefromprojectgroup.git
-cd laudryproject_improvefromprojectgroup
+git clone https://github.com/DolVolo/laundry-mju.git
+cd laundry-mju
 ```
 
 **1) Backend — พอร์ต 3000**
